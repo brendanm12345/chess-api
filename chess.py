@@ -5,6 +5,14 @@ from datetime import datetime, timedelta, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 STYLE = 'classical'
+BASE_URL = "https://lichess.org/api"
+DATE_FORMAT = '%Y-%m-%d'
+DAYS_BACK = 30
+
+# Then in your code, you'd use these constants
+today = datetime.today().date()
+dates = [(today - timedelta(days=i)).strftime(DATE_FORMAT) for i in range(DAYS_BACK)][::-1]
+
 
 def fetch_top_classical_players(n=50) -> list:
     """
@@ -12,7 +20,7 @@ def fetch_top_classical_players(n=50) -> list:
     """
     players = []
     try:
-        resp = requests.get(f'https://lichess.org/api/player/top/{n}/{STYLE}')
+        resp = requests.get(f'{BASE_URL}/player/top/{n}/{STYLE}')
         resp.raise_for_status()
         data = resp.json()
 
@@ -21,7 +29,7 @@ def fetch_top_classical_players(n=50) -> list:
         else:
             print("Error: The response JSON does not contain the 'users' key.")
 
-    except requests.RequestException as e:
+    except RequestException as e:
         print(f"An error occurred while making the request: {e}")
     except ValueError:
         print("Error: Failed to parse JSON response.")
@@ -41,44 +49,47 @@ def fetch_last_30_day_rating_for_player(username) -> dict:
     and returns a dict in format: {username: {today-29: 990, today-28: 991, etc}}
     """
     try:
-        resp = requests.get(f'https://lichess.org/api/user/{username}/rating-history')
+        resp = requests.get(f'{BASE_URL}/api/user/{username}/rating-history')
         resp.raise_for_status()
         data = resp.json()
-        print('SEARCH: ', data)
 
         # Filter the rating history by desired chess style, in this case Classical
         classical_history = next((category for category in data if category['name'] == STYLE.capitalize()), None)
         if not classical_history:
             return {}
         
-        # this mihgt need to be removed because the data is already sort in ascedning order by date
-        classical_history['points'].sort(key=lambda x: date(int(x[0]), int(x[1] + 1), int(x[2])))
-        
-        today = datetime.today()
-        rating_by_day = {}
+        # Create a mapping of date to rating
+        classical_ratings = {datetime(year, month + 1, day).date(): rating for year, month, day, rating in classical_history['points']}
+
+        # Find the last known rating before the 30-day period
         last_known_rating = None
+        for date in sorted(classical_ratings.keys(), reverse=True):
+            if date < (today - timedelta(days=29)):
+                last_known_rating = classical_ratings[date]
+                break
 
-        # Iterate through the last 30 days and find the last known rating for each day
-        for days_ago in range(29, -1, -1):
-            check_date = today - timedelta(days=days_ago)
+        # Initialize the last 30 days with -1 to indicate missing rating
+        rating_by_day = {today - timedelta(days=i): -1 for i in range(DAYS_BACK)}
 
-            for entry in classical_history['points']:
-                rating_date = datetime(entry[0], entry[1] + 1, entry[2])
-                if rating_date <= check_date:
-                    last_known_rating = entry[3]
-            
-            # EDGE CASE: If last_known_rating is still None, find the nearest last known time
-            if last_known_rating is None:
-                for entry in reversed(classical_history['points']):
-                    rating_date = datetime(entry[0], entry[1] + 1, entry[2])
-                    if rating_date < check_date:
-                        last_known_rating = entry[3]
-                        break
-
-            rating_by_day[f"today-{days_ago}"] = last_known_rating if last_known_rating is not None else "No rating found"
-
-        return rating_by_day
-    except requests.RequestException as e:
+        # Fill the dictionary with the available ratings
+        for rating_date, rating in classical_ratings.items():
+            if rating_date in rating_by_day:
+                rating_by_day[rating_date] = rating
+        
+        # Loop back the other way to fill in the -1s with the last known rating
+        for date in sorted(rating_by_day.keys()):
+            if rating_by_day[date] == -1:
+                rating_by_day[date] = last_known_rating
+            else:
+                last_known_rating = rating_by_day[date]
+        
+        # Convert date keys back to 'today-x' format
+        rating_by_day_formatted = {f"today-{(today - date).days}": rating if rating is not None else "No rating found" 
+                                   for date, rating in rating_by_day.items()}
+                                   
+        return rating_by_day_formatted
+        
+    except RequestException as e:
         print(f"An error occurred while making the request: {e}")
     except ValueError:
         print("Error: Failed to parse JSON response.")
@@ -103,24 +114,13 @@ def print_last_30_day_rating_for_top_player() -> None:
 # PART 3: Create a CSV that shows the rating history for each of these 50 players, for the last 30 days.
 # The CSV should have 51 rows (1 header, 50 players).
 # The CSV should be in the same order of the leaderboard.
-
-# The first column in the csv should be the username of the player.
-# Columns afterward should be the player's rating on the specified date.
-# A CSV could look like this:
-# username,2022-01-01,2022-01-02,2022-01-03,.....,2022-01-31
-# bob,1231,1158,1250,...,1290
-# notagm,900,900,900,...,900
-
 def generate_rating_csv_for_top_50_classical_players() -> None:
     players = fetch_top_classical_players()
     if not players:
         print("No players found.")
         return
 
-    # Prepare dates for the header
-    dates = [(datetime.today() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(30)][::-1]
-
-    # Use a thread pool to fetch data concurrently
+    # Thread pool to fetch data concurrently for speed
     with ThreadPoolExecutor(max_workers=10) as executor:
         # Start the load operations and mark each future with its URL
         future_to_username = {executor.submit(fetch_last_30_day_rating_for_player, player['username']): player['username'] for player in players}
@@ -129,11 +129,20 @@ def generate_rating_csv_for_top_50_classical_players() -> None:
             username = future_to_username[future]
             try:
                 player_ratings_raw = future.result()
-                player_ratings = { (datetime.today() - timedelta(days=int(key.split('-')[1]))).strftime('%Y-%m-%d'): value for key, value in player_ratings_raw.items() }
+                player_ratings = { (today - timedelta(days=int(key.split('-')[1]))).strftime('%Y-%m-%d'): value for key, value in player_ratings_raw.items() }
                 ratings[username] = player_ratings
             except Exception as e:
                 print(f"{username} generated an exception: {e}")
                 ratings[username] = {}
+
+    # Extract latest ratings for sorting
+    latest_ratings = {
+        username: player_ratings.get(datetime.today().strftime('%Y-%m-%d'), 0)
+        for username, player_ratings in ratings.items()
+    }
+    # Sort by latest rating value in descending order
+    sorted_ratings = sorted(latest_ratings, key=latest_ratings.get, reverse=True)
+
 
     # Write CSV
     with open('ratings.csv', 'w', newline='') as csvfile:
@@ -141,14 +150,18 @@ def generate_rating_csv_for_top_50_classical_players() -> None:
         # Write the header
         writer.writerow(['username'] + dates)
         # Write the player ratings
-        for username in ratings:
+        for username in sorted_ratings:
             # Prepare a list of ratings for each date
             player_ratings = [ratings[username].get(date, '') for date in dates]
             writer.writerow([username] + player_ratings)
+
     
 def main() -> None:
+    print('\n Printing top 50 classical players: \n')
     print_top_50_classical_players()
+    print('\n Printing last 30 day rating for top player: \n')
     print_last_30_day_rating_for_top_player()
-    # generate_rating_csv_for_top_50_classical_players()
+    print('\n Generating CSV for top 50 classical players: \n')
+    generate_rating_csv_for_top_50_classical_players()
 
 main()
