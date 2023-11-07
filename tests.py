@@ -80,7 +80,7 @@ class TestChessAPI(unittest.TestCase):
             self.assertEqual(ratings['today-0'], 2520)
             self.assertEqual(ratings['today-1'], 2520)
             self.assertEqual(ratings['today-3'], 2520)
-            self.assertEqual(ratings['today-29'], 2430) # this checks that we're looking beyond 30 days to fill in the last known rating
+            self.assertEqual(ratings['today-30'], 2430) # this checks that we're looking beyond 30 days to fill in the last known rating
 
     def test_csv_username_order_matches_leaderboard(self):
         # Call the function to generate CSV

@@ -1,3 +1,7 @@
+# Author: Brendan McLaughlin
+# Date: 11/7/2023
+# For: SWE Intern Take-Home
+
 import requests
 from requests.exceptions import RequestException
 import csv
@@ -7,9 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 STYLE = 'classical'
 BASE_URL = "https://lichess.org/api"
 DATE_FORMAT = '%Y-%m-%d'
-DAYS_BACK = 30
+DAYS_BACK = 31
 
-# Then in your code, you'd use these constants
 today = datetime.today().date()
 dates = [(today - timedelta(days=i)).strftime(DATE_FORMAT) for i in range(DAYS_BACK)][::-1]
 
@@ -49,7 +52,7 @@ def fetch_last_30_day_rating_for_player(username) -> dict:
     and returns a dict in format: {username: {today-29: 990, today-28: 991, etc}}
     """
     try:
-        resp = requests.get(f'{BASE_URL}/api/user/{username}/rating-history')
+        resp = requests.get(f'{BASE_URL}/user/{username}/rating-history')
         resp.raise_for_status()
         data = resp.json()
 
@@ -64,7 +67,7 @@ def fetch_last_30_day_rating_for_player(username) -> dict:
         # Find the last known rating before the 30-day period
         last_known_rating = None
         for date in sorted(classical_ratings.keys(), reverse=True):
-            if date < (today - timedelta(days=29)):
+            if date < (today - timedelta(days=30)):
                 last_known_rating = classical_ratings[date]
                 break
 
@@ -86,7 +89,7 @@ def fetch_last_30_day_rating_for_player(username) -> dict:
         # Convert date keys back to 'today-x' format
         rating_by_day_formatted = {f"today-{(today - date).days}": rating if rating is not None else "No rating found" 
                                    for date, rating in rating_by_day.items()}
-                                   
+
         return rating_by_day_formatted
         
     except RequestException as e:
